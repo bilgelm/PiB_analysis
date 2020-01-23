@@ -574,7 +574,7 @@ def run(args, device):
             ymin = min(ymin, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).min())
             ymax = max(ymax, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).max())
 
-    ax2.set_ylim(ymin - .1 * (y_max - y_min), ymax + .1 * (y_max - y_min))
+    ax2.set_ylim(ymin - .1 * (ymax - ymin), ymax + .1 * (ymax - ymin))
     ax2.set_xlabel('Age')
     ax2.set_ylabel('PiB')
     ax2.set_title('Geodesic reconstruction for random observations')
@@ -625,7 +625,7 @@ def run(args, device):
                     color=color)
             ax.plot(destandardize_data(torch.from_numpy(all_geo[intrapolation_indexes, 0])),
                     all_geo[intrapolation_indexes, 1], linestyle='-', linewidth=2., color=color)
-            posidx = np.where(all_geo[:, 0] > restandardize_data(args.pib_threshold))[0]
+            posidx = np.where(all_geo[:, 0] > float(restandardize_data(args.pib_threshold)))[0]
             pib_at_t_ref.append(t_all[posidx[0]] if len(posidx) else None)
 
     ax.set_xlabel('PiB')
