@@ -446,7 +446,7 @@ def run(args, device):
     ax1.set_xlabel('PiB index')
     ax1.set_ylabel('inverse metric')
     ax1bis.set_ylabel('metric')
-    ax1.set_title('Estimated metric (normalized) for {}'.format(model_GP_H.name))
+    ax1.set_title('Estimated metric (normalized) for {} GP'.format(model_GP_H.name))
     ax1.legend(loc=0)
     ax1bis.legend(loc=2)
 
@@ -536,6 +536,7 @@ def run(args, device):
     ax1.legend()
 
     # ------ Plot random geodesics
+    ymin, ymax = np.inf, - np.inf
     idx1, idx2, idx3 = np.random.choice(idx_33.squeeze(), 2, replace=False), \
                        np.random.choice(idx_34.squeeze(), 2, replace=False), \
                        np.random.choice(idx_44.squeeze(), 2, replace=False)
@@ -570,6 +571,10 @@ def run(args, device):
                 (gpu_numpy_detach(backward_geo)[::-1][:-1, 0, 0], gpu_numpy_detach(forward_geo)[:, 0, 0]))
             ax2.plot(destandardize_time(torch.from_numpy(t_all)), destandardize_data(torch.from_numpy(all_geo)),
                      linestyle='-.', color=color)
+            ymin = min(ymin, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).min())
+            ymax = max(ymax, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).max())
+
+    ax2.set_ylim(ymin - .1 * (y_max - y_min), ymax + .1 * (y_max - y_min))
     ax2.set_xlabel('Age')
     ax2.set_ylabel('PiB')
     ax2.set_title('Geodesic reconstruction for random observations')

@@ -2,16 +2,23 @@
 
 An analysis of PiB data (from WRAP and BLAS datasets) with differential equations tools.
 
-![wrap data](https://github.com/pvernhet-aramis/PiB_analysis/imgs/train_val_test.png)
+WRAP data :
+![wrap data](https://github.com/pvernhet-aramis/PiB_analysis/src/imgs/train_val_test.png)
 
 ### I - For first order ODE
 
-![calibration](https://github.com/pvernhet-aramis/PiB_analysis/imgs/Sequences_aligned.png)
-![boxplot](https://github.com/pvernhet-aramis/PiB_analysis/imgs/boxplot1d_age.png)
+Calibration of trajectories :
+![calibration](https://github.com/pvernhet-aramis/PiB_analysis/src/imgs/Sequences_aligned.png)
+
+Wilcoxon paired test :
+![boxplot](https://github.com/pvernhet-aramis/PiB_analysis/src/imgs/boxplot1d_age.png)
 
 ### I - For second order ODE
 
-![geodesics](https://github.com/pvernhet-aramis/PiB_analysis/imgs/2dlinear_geodesics_example.png)
-![phasespace](https://github.com/pvernhet-aramis/PiB_analysis/imgs/2dlinear_phasespace.png)
+Inverse metric and geodesic reconstruction :
+![geodesics](https://github.com/pvernhet-aramis/PiB_analysis/src/imgs/2dlinear_geodesics_example.png)
+
+Phase space observation of regressed trajectories :
+![phasespace](https://github.com/pvernhet-aramis/PiB_analysis/src/imgs/2dlinear_phasespace.png)
 
 
