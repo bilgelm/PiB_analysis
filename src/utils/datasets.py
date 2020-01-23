@@ -37,9 +37,9 @@ def get_fromdataframe(df, batch_size, standardize=True, nobs=3, seed=123):
         # DATA GENERATION
         rowt, rowy, rowapoe_all1, rowapoe_all2 = row[0], row[1], row[2], row[3]
         if len(rowt) >= nobs:
-            reference_time = torch.from_numpy(np.array(rowt + [rowt[-1] ] *(nb_bin s -len(rowt))))
-            masker = torch.from_numpy(np.array([1 ] *len(rowt) + [0 ] *(nb_bin s -len(rowt))).astype(int))
-            fns = torch.from_numpy(np.array(rowy + [rowy[-1] ] *(nb_bin s -len(rowy))))
+            reference_time = torch.from_numpy(np.array(rowt + [rowt[-1] ] *(nb_bins -len(rowt))))
+            masker = torch.from_numpy(np.array([1 ] *len(rowt) + [0 ] *(nb_bins -len(rowt))).astype(int))
+            fns = torch.from_numpy(np.array(rowy + [rowy[-1] ] *(nb_bins -len(rowy))))
             label = torch.from_numpy(np.array([rowapoe_all1, rowapoe_all2]))
 
             # GET AS MASKERS
@@ -105,7 +105,7 @@ def get_fromdataframe(df, batch_size, standardize=True, nobs=3, seed=123):
     test = data_utils.TensorDataset(index_test, maskers_test, times_test, x_test, labels_test)
     test_loader = data_utils.DataLoader(test, batch_size=batch_size, shuffle=True)
 
-    index_all = torch.linspace(0, n_ge t -1, n_get).type(torch.long)
+    index_all = torch.linspace(0, n_get -1, n_get).type(torch.long)
     # print(index_train.shape, index_all.shape)
     all_data = data_utils.TensorDataset(index_all, maskers, times_all, x_all, labels)
     all_data_loader = data_utils.DataLoader(all_data, batch_size=batch_size, shuffle=True)
