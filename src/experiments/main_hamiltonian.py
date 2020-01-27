@@ -147,6 +147,8 @@ def get_dataframe(data_path, min_visits):
     #df.dropna(subset=['apoe4gen'], inplace=True)
     #df['apoe4gen'] = df.apoe4gen.astype(int)
     df['apoe4gen'] = df.apoe4gen.fillna(0).astype(int)
+    # exclude APOE e2/e4's
+    df = df[df.apoe4gen != 24]
     df['apoe_all1'] = (df['apoe4gen'] // 10).astype(int)
     df['apoe_all2'] = (df['apoe4gen'] % 10).astype(int)
     assert(all(df['apoe_all1']*10 + df['apoe_all2'] == df['apoe4gen']))

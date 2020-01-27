@@ -108,6 +108,8 @@ def get_dataframe(data_path, min_visits):
     #df.dropna(subset=['apoe4gen'], inplace=True)
     #df['apoe4gen'] = df.apoe4gen.astype(int)
     df['apoe4gen'] = df.apoe4gen.fillna(0).astype(int)
+    # exclude APOE e2/e4's
+    df = df[df.apoe4gen != 24]
     df['apoe_all1'] = (df['apoe4gen'] // 10).astype(int)
     df['apoe_all2'] = (df['apoe4gen'] % 10).astype(int)
     assert(all(df['apoe_all1']*10 + df['apoe_all2'] == df['apoe4gen']))
@@ -246,9 +248,6 @@ def align_trajectories(data_loader, model_GP, preprocessing, pib_threshold, time
     print('>> Rejected rate = {:.1f}% ({} / {})\n'.format(100 * (i_undone / float(i_total)), i_undone, i_total))
 
     # Indices for APOE pairs: (3,3) | (3,4) | (4,4)
-    print("y_lab")
-    print(y_lab)
-    print("----------")
     idx_33 = np.argwhere(np.array(y_lab) == 6)
     idx_34 = np.argwhere(np.array(y_lab) == 7)
     idx_44 = np.argwhere(np.array(y_lab) == 8)
