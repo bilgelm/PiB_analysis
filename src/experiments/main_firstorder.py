@@ -84,25 +84,35 @@ def get_dataframe(data_path, min_visits):
     :return: dataframe with columns (time (list) | values (list) | apoe_all1 (int) | apoe_all2 (int))
     """
     # Get data (as pandas dataframes)
-    df_pib = pd.read_sas(os.path.join(data_path, 'pib.sas7bdat'), format='sas7bdat')
+    df_pib = pd.read_csv(os.path.join(data_path,'PiB_DVR_concise_20190418.csv'))
     # df_mri = pd.read_sas(os.path.join(data_path, 'mri.sas7bdat'), format='sas7bdat')
-    df_demo = pd.read_sas(os.path.join(data_path, 'demo.sas7bdat'), format='sas7bdat')
+    df_demo = pd.read_excel(os.path.join(data_path,'PETstatus_09Nov2018.xlsx'))
     # df_pacc = pd.read_sas(os.path.join(data_path, 'pacc.sas7bdat'), format='sas7bdat')
 
+    df = df_pib.merge(df_demo, on=['blsaid','blsavi'])
+
     # Preprocess data
-    df_demo['reggieid'] = df_demo.reggieid.astype(int)
-    df_pib['reggieid'] = df_pib.reggieid.astype(int)
-    df_pib.head()
-    df_time = df_pib.groupby(['reggieid'])['pib_age'].apply(list)
-    df_values = df_pib.groupby(['reggieid'])['pib_index'].apply(list)
+    #df_demo['reggieid'] = df_demo.reggieid.astype(int)
+    #df_pib['reggieid'] = df_pib.reggieid.astype(int)
+    #df_pib.head()
+    df_time = df.groupby(['blsaid'])['PIBage'].apply(list)
+    df_values = df.groupby(['blsaid'])['mean.cortical'].apply(list)
     df_merged = pd.concat([df_time, df_values], axis=1)
     assert len(df_time) == len(df_values) == len(df_merged)
     print('Number of patients : {:d}'.format(len(df_merged)))
-    df_merged = df_merged[df_merged['pib_age'].apply(lambda x: len(x)) >= min_visits]
+    df_merged = df_merged[df_merged['PIBage'].apply(lambda x: len(x)) >= min_visits]
     print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
 
     # Final merge
-    df = df_merged.join(df_demo.set_index('reggieid')[['apoe_all1', 'apoe_all2']])
+    df = df_merged.join(df_demo.groupby(['blsaid']).first()[['apoe4gen']]) # .set_index('blsaid')
+    #df.dropna(subset=['apoe4gen'], inplace=True)
+    #df['apoe4gen'] = df.apoe4gen.astype(int)
+    df['apoe4gen'] = df.apoe4gen.fillna(0).astype(int)
+    df['apoe_all1'] = (df['apoe4gen'] // 10).astype(int)
+    df['apoe_all2'] = (df['apoe4gen'] % 10).astype(int)
+    assert(all(df['apoe_all1']*10 + df['apoe_all2'] == df['apoe4gen']))
+    df.drop(columns='apoe4gen', inplace=True)
+
     return df
 
 
@@ -236,6 +246,9 @@ def align_trajectories(data_loader, model_GP, preprocessing, pib_threshold, time
     print('>> Rejected rate = {:.1f}% ({} / {})\n'.format(100 * (i_undone / float(i_total)), i_undone, i_total))
 
     # Indices for APOE pairs: (3,3) | (3,4) | (4,4)
+    print("y_lab")
+    print(y_lab)
+    print("----------")
     idx_33 = np.argwhere(np.array(y_lab) == 6)
     idx_34 = np.argwhere(np.array(y_lab) == 7)
     idx_44 = np.argwhere(np.array(y_lab) == 8)
@@ -410,16 +423,19 @@ def run(args, device):
 
     boxplot_stock_pib = []
     boxplot_stock_age = []
+    group_labels = []
     for ic, name in zip([idx_33, idx_34, idx_44], ['APOE 33', 'APOE 34', 'APOE 44']):
-        age_tref = int(gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([t_ref]))))[0])
-        age_pibpos = gpu_numpy_detach(destandardize_time(torch.from_numpy(t_ref - np.array(initial_dtau)[ic])))
-        pib_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np.array(initial_conditions)[ic])))
-        boxplot_stock_pib.append(age_pibpos)
-        boxplot_stock_age.append(pib_tref)
-        print('{}'.format(name))
-        print('          age at PiB positive :     {:.2f} +- {:.2f}'.format(np.mean(age_pibpos), np.std(age_pibpos)))
-        print('          PiB at reference age {} : {:.2f} +- {:.2f}'.format(age_tref, np.mean(pib_tref),
-                                                                            np.std(pib_tref)))
+        if any(ic):
+            age_tref = int(gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([t_ref]))))[0])
+            age_pibpos = gpu_numpy_detach(destandardize_time(torch.from_numpy(t_ref - np.array(initial_dtau)[ic])))
+            pib_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np.array(initial_conditions)[ic])))
+            boxplot_stock_pib.append(pib_tref)
+            boxplot_stock_age.append(age_pibpos)
+            group_labels.append(name)
+            print('{}'.format(name))
+            print('          age at PiB positive :     {:.2f} +- {:.2f}'.format(np.mean(age_pibpos), np.std(age_pibpos)))
+            print('          PiB at reference age {} : {:.2f} +- {:.2f}'.format(age_tref, np.mean(pib_tref),
+                                                                                np.std(pib_tref)))
 
     # -------- compute wilcowon scores
     wilcox_age_01 = ranksums(x=np.array(initial_dtau)[idx_33].squeeze(),
@@ -463,7 +479,7 @@ def run(args, device):
 
     fig = plt.subplots(figsize=(10, 5))
     plt.boxplot(boxplot_stock_age)
-    plt.xticks([i for i in range(1, 4)], ['APOE 33', 'APOE 34', 'APOE 44'], rotation=60)
+    plt.xticks([i for i in range(1, len(group_labels)+1)], group_labels, rotation=60)
     plt.ylabel('Age at PiB positive')
     plt.title('Age at PiB positive according to ODE regression')
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), bbox_inches='tight', pad_inches=0)
@@ -471,7 +487,7 @@ def run(args, device):
 
     fig = plt.subplots(figsize=(10, 5))
     plt.boxplot(boxplot_stock_pib)
-    plt.xticks([i for i in range(1, 4)], ['APOE 33', 'APOE 34', 'APOE 44'], rotation=60)
+    plt.xticks([i for i in range(1, len(group_labels)+1)], group_labels, rotation=60)
     plt.ylabel('PiB')
     plt.title('PiB at reference age {} y'.format(age_tref))
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_pib.png'), bbox_inches='tight', pad_inches=0)
@@ -480,4 +496,3 @@ def run(args, device):
 
 if __name__ == '__main__':
     run(args, device=DEVICE)
-

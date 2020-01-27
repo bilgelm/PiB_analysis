@@ -39,6 +39,7 @@ from src.utils.models import ExactGPModel, Christoffel, Hamiltonian
 from src.utils.integrators import torchdiffeq_torch_integrator
 
 
+
 parser = argparse.ArgumentParser(description='Hamiltonian fit with GP on PiB data.')
 # action parameters
 parser.add_argument('--output_dir', type=str, default='./results/hamiltonian', help='Output directory.')
@@ -87,7 +88,7 @@ else:
 
 
 # Custom functions definitions
-
+'''
 def get_dataframe(data_path, min_visits):
     """
     :param data_path: absolute path to data
@@ -114,7 +115,44 @@ def get_dataframe(data_path, min_visits):
     # Final merge
     df = df_merged.join(df_demo.set_index('reggieid')[['apoe_all1', 'apoe_all2']])
     return df
+'''
 
+def get_dataframe(data_path, min_visits):
+    """
+    :param data_path: absolute path to data
+    :return: dataframe with columns (time (list) | values (list) | apoe_all1 (int) | apoe_all2 (int))
+    """
+    # Get data (as pandas dataframes)
+    df_pib = pd.read_csv(os.path.join(data_path,'PiB_DVR_concise_20190418.csv'))
+    # df_mri = pd.read_sas(os.path.join(data_path, 'mri.sas7bdat'), format='sas7bdat')
+    df_demo = pd.read_excel(os.path.join(data_path,'PETstatus_09Nov2018.xlsx'))
+    # df_pacc = pd.read_sas(os.path.join(data_path, 'pacc.sas7bdat'), format='sas7bdat')
+
+    df = df_pib.merge(df_demo, on=['blsaid','blsavi'])
+
+    # Preprocess data
+    #df_demo['reggieid'] = df_demo.reggieid.astype(int)
+    #df_pib['reggieid'] = df_pib.reggieid.astype(int)
+    #df_pib.head()
+    df_time = df.groupby(['blsaid'])['PIBage'].apply(list)
+    df_values = df.groupby(['blsaid'])['mean.cortical'].apply(list)
+    df_merged = pd.concat([df_time, df_values], axis=1)
+    assert len(df_time) == len(df_values) == len(df_merged)
+    print('Number of patients : {:d}'.format(len(df_merged)))
+    df_merged = df_merged[df_merged['PIBage'].apply(lambda x: len(x)) >= min_visits]
+    print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
+
+    # Final merge
+    df = df_merged.join(df_demo.groupby(['blsaid']).first()[['apoe4gen']]) # .set_index('blsaid')
+    #df.dropna(subset=['apoe4gen'], inplace=True)
+    #df['apoe4gen'] = df.apoe4gen.astype(int)
+    df['apoe4gen'] = df.apoe4gen.fillna(0).astype(int)
+    df['apoe_all1'] = (df['apoe4gen'] // 10).astype(int)
+    df['apoe_all2'] = (df['apoe4gen'] % 10).astype(int)
+    assert(all(df['apoe_all1']*10 + df['apoe_all2'] == df['apoe4gen']))
+    df.drop(columns='apoe4gen', inplace=True)
+
+    return df
 
 def ivp_integrate_GP(model, t_eval, y0):
 
@@ -537,10 +575,35 @@ def run(args, device):
 
     # ------ Plot random geodesics
     ymin, ymax = np.inf, - np.inf
-    idx1, idx2, idx3 = np.random.choice(idx_33.squeeze(), 2, replace=False), \
-                       np.random.choice(idx_34.squeeze(), 2, replace=False), \
-                       np.random.choice(idx_44.squeeze(), 2, replace=False)
-    for idds, name, color in zip([idx1, idx2, idx3], ['APOE 33', 'APOE 34', 'APOE 44'], ['r', 'b', 'g']):
+
+    idx_list = []
+    idxXX_list = []
+    idx_squeeze_list = []
+    name_list = []
+    color_list = []
+    if any(idx_33):
+        idx1 = np.random.choice(idx_33.squeeze(), 2, replace=False)
+        idxXX_list.append(idx_33)
+        idx_squeeze_list.append(idx_33.squeeze())
+        idx_list.append(idx1)
+        name_list.append('APOE 33')
+        color_list.append('r')
+    if any(idx_34):
+        idx2 = np.random.choice(idx_34.squeeze(), 2, replace=False)
+        idxXX_list.append(idx_34)
+        idx_squeeze_list.append(idx_34.squeeze())
+        idx_list.append(idx2)
+        name_list.append('APOE 34')
+        color_list.append('b')
+    if any(idx_44):
+        idx3 = np.random.choice(idx_44.squeeze(), 2, replace=False)
+        idxXX_list.append(idx_44)
+        idx_squeeze_list.append(idx_44.squeeze())
+        idx_list.append(idx3)
+        name_list.append('APOE 44')
+        color_list.append('g')
+
+    for idds, name, color in zip(idx_list, name_list, color_list):
         for i, idd in enumerate(idds):
             idd = int(idd)
             # real observed data
@@ -589,17 +652,20 @@ def run(args, device):
 
     print('Age at onset computation and plot [time consuming step]...')
     fig, ax = plt.subplots(figsize=(15, 8))
-    ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_33])), y=np_ic_ref[1, idx_33], marker='*',
-               color='r', s=50., label='APOE 33')
-    ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_34])), y=np_ic_ref[1, idx_34], marker='*',
-               color='b', s=50., label='APOE 34')
-    ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_44])), y=np_ic_ref[1, idx_44], marker='*',
-               color='g', s=50., label='APOE 44')
+    if any(idx_33):
+        ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_33])), y=np_ic_ref[1, idx_33], marker='*',
+                   color='r', s=50., label='APOE 33')
+    if any(idx_34):
+        ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_34])), y=np_ic_ref[1, idx_34], marker='*',
+                   color='b', s=50., label='APOE 34')
+    if any(idx_44):
+        ax.scatter(x=destandardize_data(torch.from_numpy(np_ic_ref[0, idx_44])), y=np_ic_ref[1, idx_44], marker='*',
+                   color='g', s=50., label='APOE 44')
 
     # Reconstructed trajectories | estimated age at onset (aka PiB positivity)
     pib_at_t_ref = []  # storing estimated age of crossing PiB positivity
-    for idds, name, color in zip([idx_33.squeeze(), idx_34.squeeze(), idx_44.squeeze()],
-                                 ['APOE 33', 'APOE 34', 'APOE 44'], ['r', 'b', 'g']):
+    for idds, name, color in zip(idx_squeeze_list,
+                                 name_list, color_list):
         for i, idd in tqdm(enumerate(idds)):
             idd = int(idd)
             # Time stretch : intrapolation | extrapolation
@@ -644,7 +710,7 @@ def run(args, device):
 
     boxplot_stock_pib = []
     # boxplot_stock_age = []
-    for i_, name in zip([idx_33, idx_34, idx_44], ['APOE 33', 'APOE 34', 'APOE 44']):
+    for i_, name in zip(idxXX_list, name_list):
         age_tref = int(gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([t_ref]))))[0])
         pib_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np_ic_ref[0, i_])))
         p_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np_ic_ref[1, i_])))
@@ -696,7 +762,7 @@ def run(args, device):
 
     fig = plt.subplots(figsize=(10, 5))
     plt.boxplot(boxplot_stock_pib)
-    plt.xticks([i for i in range(1, 4)], ['APOE 33', 'APOE 34', 'APOE 44'], rotation=60)
+    plt.xticks([i for i in range(1, len(name_list)+1)], name_list, rotation=60)
     plt.ylabel('PiB')
     plt.title('PiB score at reference age : {} years'.format(age_tref))
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_pib.png'), bbox_inches='tight', pad_inches=0)
@@ -705,4 +771,3 @@ def run(args, device):
 
 if __name__ == '__main__':
     run(args, device=DEVICE)
-
