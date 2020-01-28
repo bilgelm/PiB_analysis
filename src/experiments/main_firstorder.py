@@ -48,13 +48,12 @@ parser.add_argument('--seed', type=int, default=123, help='Random seed.')
 parser.add_argument('--min_visits', type=int, default=3, help='Minimal number of visits.')
 parser.add_argument('--preprocessing', action='store_true', help='Standardization of not.')
 parser.add_argument('--noise_std', type=float, default=.07, help='Std of additive noise on observations.')
-parser.add_argument('--filter_quantiles', action='store_true', help='Filter ratio data of not.')
-parser.add_argument('--eps_quantiles', type=float, default=.05, help='Fraction of left out quantiles.')
 parser.add_argument('--batch_size', type=int, default=16, help='Training batch size.')
 # model parameters
 parser.add_argument('--model_type', type=str, default='POLY', choices=['RBF', 'LINEAR', 'POLY'], help='GP model type.')
 parser.add_argument('--tuning', type=int, default=50, help='Tuning of GP hyperparameters.')
 parser.add_argument('--pib_threshold', type=float, default=1.2, help='Onset for PiB positivity (data dependant).')
+parser.add_argument('--use_vars', action='store_true', help='Wether to use variance information or not.')
 
 
 args = parser.parse_args()
@@ -99,9 +98,12 @@ def get_dataframe(data_path, min_visits):
     df_values = df.groupby(['blsaid'])['mean.cortical'].apply(list)
     df_merged = pd.concat([df_time, df_values], axis=1)
     assert len(df_time) == len(df_values) == len(df_merged)
-    print('Number of patients : {:d}'.format(len(df_merged)))
+
     df_merged = df_merged[df_merged['PIBage'].apply(lambda x: len(x)) >= min_visits]
     print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
+    #print('Number of patients : {:d}'.format(len(df_merged)))
+    print('Mean number of visits : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: len(x)))))
+    print('Mean span of visits : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: max(x) - min(x)))))
 
     # Final merge
     df = df_merged.join(df_demo.groupby(['blsaid']).first()[['apoe4gen']]) # .set_index('blsaid')
@@ -135,7 +137,7 @@ def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
     Ridge regression on data to summarize trajectories with first derivatives
     """
     # Ridge regression for longitudinal reduction
-    polynomial_features = PolynomialFeatures(degree=2, include_bias=True)
+    polynomial_features = PolynomialFeatures(degree=1, include_bias=True)
     alpha_ridge = 1e-10 if preprocessing else alpha_default
     ridge_regression = Ridge(alpha=alpha_ridge, fit_intercept=False)
     stats_derivatives = {'t_bar': [], 'means': [], 'bias': [], 'covars': []}
@@ -147,25 +149,25 @@ def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
             t = gpu_numpy_detach(time[masker == True])
             s = gpu_numpy_detach(sequence[masker == True])
             n = len(t)
-            assert n > 2, "At least 3 points required for a 2nd order derivative estimate"
+            assert len(t) > 1, "At least 2 points required for a 1st order derivative estimate"
             t_bar = np.mean(t)
 
-            # i) Fit Ridge regression
-            t_poly = polynomial_features.fit_transform(t.reshape(-1, 1))
-            ridge_regression.fit(t_poly, s)
+            # i) Fit LINEAR Ridge regression
+            t_ = polynomial_features.fit_transform(t.reshape(-1, 1))
+            ridge_regression.fit(t_, s)
             theta = np.array(ridge_regression.coef_)
-            A_func = lambda t_ref: np.array([[1, t_ref, t_ref ** 2], [0., 1., 2 * t_ref], [0., 0., 2]])
+            A_func = lambda t_ref: np.array([[1, t_ref], [0., 1.]])
             A_bar = A_func(t_bar)
 
             # ii) Regress fitted data at mean time point (ie t_bar)
             s_hat = A_bar.dot(theta)
 
             # iii) Store bias and variances on (biased) estimator
-            H = np.linalg.inv(np.transpose(t_poly).dot(t_poly) + alpha_ridge * n * np.eye(3)).dot(
-                np.transpose(t_poly).dot(t_poly))
+            H = np.linalg.inv(np.transpose(t_).dot(t_) + alpha_ridge * n * np.eye(2)).dot(
+                np.transpose(t_).dot(t_))
             bias_theta = H.dot(theta)
             covar_theta = var * H.dot(
-                np.linalg.inv(np.transpose(t_poly).dot(t_poly) + alpha_ridge * n * np.eye(3)))
+                np.linalg.inv(np.transpose(t_).dot(t_) + alpha_ridge * n * np.eye(2)))
             bias_derivatives = A_bar.dot(bias_theta)
             covars_derivatives = A_bar.dot(covar_theta).dot(np.transpose(A_bar))
 
@@ -175,7 +177,8 @@ def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
             stats_derivatives['covars'].append(covars_derivatives)
 
     x_derivatives = np.transpose(np.stack(stats_derivatives['means']))
-    return x_derivatives
+    x_uncertainties = np.transpose(np.stack(stats_derivatives['covars']))
+    return x_derivatives, x_uncertainties
 
 
 def align_trajectories(data_loader, model_GP, preprocessing, pib_threshold, timesteps=200, nb_var=3):
@@ -204,7 +207,7 @@ def align_trajectories(data_loader, model_GP, preprocessing, pib_threshold, time
         [np.concatenate(backward_x).ravel()[::-1][:-1], np.concatenate(forward_x).ravel()])
 
     # Ridge regression for longitudinal reduction
-    polynomial_features = PolynomialFeatures(degree=2, include_bias=True)
+    polynomial_features = PolynomialFeatures(degree=1, include_bias=True)
     alpha_ridge = 1e-10 if preprocessing else 1e1
     ridge_regression = Ridge(alpha=alpha_ridge, fit_intercept=False)
     labeler_func = lambda arr: int(np.sum(arr))
@@ -223,10 +226,10 @@ def align_trajectories(data_loader, model_GP, preprocessing, pib_threshold, time
             t_bar = np.mean(t)
 
             # i) Fit Ridge regression
-            t_poly = polynomial_features.fit_transform(t.reshape(-1, 1))
-            ridge_regression.fit(t_poly, s)
+            t_ = polynomial_features.fit_transform(t.reshape(-1, 1))
+            ridge_regression.fit(t_, s)
             theta = np.array(ridge_regression.coef_)
-            A_func = lambda t_ref: np.array([[1, t_ref, t_ref ** 2], [0., 1., 2 * t_ref], [0., 0., 2]])
+            A_func = lambda t_ref: np.array([[1, t_ref], [0., 1.]])
             A_bar = A_func(t_bar)
 
             # ii) Regress fitted data at mean time point (ie t_bar)
@@ -289,35 +292,40 @@ def run(args, device):
     destandardize_data = lambda data: data * data_std + data_mean if args.preprocessing else data
     restandardize_data = lambda data: (data - data_mean) / data_std if args.preprocessing else data
 
+    # Plot dataset
+    xpltmin, xpltmax = np.inf, -np.inf
+    fig, ax = plt.subplots(figsize=(5, 5))
+    for batch_idx, (positions, maskers, times, sequences, _) in enumerate(all_loader):
+        for position, masker, time, sequence in zip(positions, maskers, times, sequences):
+            t = gpu_numpy_detach(destandardize_time(time[masker == True]))
+            s = gpu_numpy_detach(destandardize_data(sequence[masker == True]))
+            ax.plot(t, s, '--o', linewidth=1., markersize=5)
+            xpltmin = min(xpltmin, min(t))
+            xpltmax = max(xpltmax, max(t))
+    ax.hlines(y=args.pib_threshold, xmin=xpltmin, xmax=xpltmax, linestyle='-', color='k', alpha=.5, label='positivity threshold')
+    # ax.set_title('WRAP dataset')
+    ax.set_xlabel('Age', fontsize=12)
+    ax.set_ylabel('PiB cDVR', fontsize=12)
+    ax.legend()
+    plt.savefig(os.path.join(args.snapshots_path, 'dataset.png'), pad_inches=.5)  # bbox_inches='tight',
+    plt.close()
+
     # Ridge regression for longitudinal reduction
-    x_derivatives = data_to_derivatives(data_loader=all_loader, preprocessing=args.preprocessing, var=args.noise_std**2)
+    x_derivatives, x_uncertainties = data_to_derivatives(data_loader=all_loader, preprocessing=args.preprocessing,
+                                                         var=gpu_numpy_detach(destandardize_data(
+                                                             torch.from_numpy(np.array([args.noise_std])) ** 2)))
+
     u = x_derivatives[0]
     v = x_derivatives[1]
-    v_squ = x_derivatives[1] ** 2
-    w = x_derivatives[2]
-    ratio = -1. * w / v_squ
-    filter_quantiles = args.filter_quantiles
-    eps_quantiles = args.eps_quantiles
-    if filter_quantiles:
-        filtered_index = np.where(
-            (ratio > np.quantile(ratio, eps_quantiles)) & (ratio < np.quantile(ratio, 1 - eps_quantiles)))
-        filtered_u = u[filtered_index]
-        filtered_ratio = ratio[filtered_index]
-        print('---\nOriginal nb points : {} \nRetained nb points : {}\n---\n'.format(len(ratio), len(filtered_ratio)))
-    else:
-        filtered_index = np.arange(len(ratio))
-        filtered_u = u
-        filtered_ratio = ratio
-        print('---\nNo filtering of extremal values\n---\n')
 
     # Plot figures
-    fig, ax = plt.subplots(figsize=(20, 6))
+    fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(x=u, y=v, marker='o', color='k', s=10.)
     ax.set_xlim(np.min(u) - 1e-4, np.max(u) + 1e-4)
-    ax.set_xlabel('x')
-    ax.set_ylabel('x_dot')
-    ax.set_title('Estimates for ODE')
-    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.png'), bbox_inches='tight', pad_inches=0)
+    ax.set_xlabel('PiV cDVR', fontsize=12)
+    ax.set_ylabel('Slope of PiB cDVR (1/year)', fontsize=10)
+    # ax.set_title('Estimates for ODE')
+    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.png'), pad_inches=1.)
     plt.close()
 
     # ==================================================================================================================
@@ -328,7 +336,13 @@ def run(args, device):
     training_iter = args.tuning     # for standardized, prefer low 5 | for raw, can go up to 50 with linear / poly
     train_x = torch.from_numpy(u).float()
     train_y = torch.from_numpy(v).float()
-    likelihood_GP = gpytorch.likelihoods.GaussianLikelihood()       # default noise : can be initialized wrt priors
+
+    if args.use_vars:
+        vardot_noises = torch.from_numpy(x_uncertainties[1, 1]).squeeze().float()  # uncertainties on x_dot
+        covdot_noises = torch.from_numpy(x_uncertainties[1, 0]).squeeze().float()  # uncertainties on x_dot
+        likelihood_GP = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise=vardot_noises, learn_additional_noise=False)
+    else:
+        likelihood_GP = gpytorch.likelihoods.GaussianLikelihood()
 
     # list of ODE GP models
     if args.model_type == 'RBF':
@@ -364,7 +378,7 @@ def run(args, device):
     likelihood_GP.eval()
 
     # ------ Plots
-    fig, ax = plt.subplots(figsize=(20, 8))
+    fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(x=destandardize_data(torch.from_numpy(u)), y=v, marker='o', color='k', s=10.)
     with torch.no_grad():
         u_line = np.linspace(u.min(), u.max(), 200)
@@ -375,12 +389,12 @@ def run(args, device):
         lower, upper = f_mean - 2. * f_var, f_mean + 2. * f_var
         ax.fill_between(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(lower), gpu_numpy_detach(upper), alpha=0.2)
     ax.set_ylim(np.min(v) - 1e-4, np.max(v) + 1e-4)
-    ax.set_xlabel('x')
-    ax.set_ylabel('x_dot')
-    ax.set_title('GP regression on ODE function')
+    ax.set_xlabel('PiB cDVR', fontsize=12)
+    ax.set_ylabel('Slope of PiB cDVR (1/year)', fontsize=10)
+    # ax.set_title('GP regression on ODE function')
     ax.legend()
     plt.gray()
-    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.png'), bbox_inches='tight', pad_inches=0)
+    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.png'), pad_inches=1.)
     plt.close()
 
     # ==================================================================================================================
@@ -393,7 +407,7 @@ def run(args, device):
                                                   pib_threshold=restandardize_data(args.pib_threshold),
                                                   timesteps=timesteps, nb_var=5.)
 
-    fig, ax = plt.subplots(figsize=(18, 10))
+    fig, ax = plt.subplots(figsize=(5, 5))
     ax.plot(destandardize_time(torch.from_numpy(t_line)) - destandardize_time(torch.from_numpy(np.array([t_ref]))),
             destandardize_data(torch.from_numpy(reference_trajectory)),
              '-', c='r', linewidth=1., label='reference trajectory')
@@ -409,11 +423,11 @@ def run(args, device):
         ymax = max(ymax, destandardize_data(torch.from_numpy(data)).max())
     ax.set_xlim(xmin - .1 * (xmax - xmin), xmax + .1 * (xmax - xmin))
     ax.set_ylim(ymin - .1 * (ymax - ymin), ymax + .1 * (ymax - ymin))
-    ax.set_xlabel('Age to onset')
-    ax.set_ylabel('PiB')
+    ax.set_xlabel('Time from PiB positivity (years)', fontsize=12)
+    ax.set_ylabel('PiB cDVR', fontsize=12)
     ax.legend()
-    ax.set_title('Aligned trajectories on common evolution')
-    plt.savefig(os.path.join(args.snapshots_path, 'Sequences_aligned.png'), bbox_inches='tight', pad_inches=0)
+    # ax.set_title('Aligned trajectories on common evolution')
+    plt.savefig(os.path.join(args.snapshots_path, 'Sequences_aligned.png'), pad_inches=0.5)
     plt.close()
 
     # ==================================================================================================================
@@ -439,16 +453,19 @@ def run(args, device):
     # -------- compute wilcowon scores
     wilcox_age_01 = ranksums(x=np.array(initial_dtau)[idx_33].squeeze(),
                              y=np.array(initial_dtau)[idx_34].squeeze())
-    wilcox_age_02 = ranksums(x=np.array(initial_dtau)[idx_33].squeeze(),
-                             y=np.array(initial_dtau)[idx_44].squeeze())
-    wilcox_age_12 = ranksums(x=np.array(initial_dtau)[idx_34].squeeze(),
-                             y=np.array(initial_dtau)[idx_44].squeeze())
     wilcox_pib_01 = ranksums(x=np.array(initial_conditions)[idx_33].squeeze(),
                              y=np.array(initial_conditions)[idx_34].squeeze())
-    wilcox_pib_02 = ranksums(x=np.array(initial_conditions)[idx_33].squeeze(),
-                             y=np.array(initial_conditions)[idx_44].squeeze())
-    wilcox_pib_12 = ranksums(x=np.array(initial_conditions)[idx_34].squeeze(),
-                             y=np.array(initial_conditions)[idx_44].squeeze())
+    if len(idx_44)>1:
+        wilcox_age_02 = ranksums(x=np.array(initial_dtau)[idx_33].squeeze(),
+                                 y=np.array(initial_dtau)[idx_44].squeeze())
+        wilcox_age_12 = ranksums(x=np.array(initial_dtau)[idx_34].squeeze(),
+                                 y=np.array(initial_dtau)[idx_44].squeeze())
+        wilcox_pib_02 = ranksums(x=np.array(initial_conditions)[idx_33].squeeze(),
+                                 y=np.array(initial_conditions)[idx_44].squeeze())
+        wilcox_pib_12 = ranksums(x=np.array(initial_conditions)[idx_34].squeeze(),
+                                 y=np.array(initial_conditions)[idx_44].squeeze())
+
+
 
     print('\n')
     print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 33',
@@ -459,29 +476,30 @@ def run(args, device):
                                                                                                        wilcox_pib_01.pvalue))
 
     print('-----')
-    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 33',
-                                                                                                          'APOE 44',
-                                                                                                          wilcox_age_02.pvalue))
-    print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
-                                                                                                       'APOE 44',
-                                                                                                       wilcox_pib_02.pvalue))
+    if len(idx_44)>1:
+        print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 33',
+                                                                                                              'APOE 44',
+                                                                                                              wilcox_age_02.pvalue))
+        print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
+                                                                                                           'APOE 44',
+                                                                                                           wilcox_pib_02.pvalue))
 
-    print('-----')
-    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 34',
-                                                                                                          'APOE 44',
-                                                                                                          wilcox_age_12.pvalue))
-    print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 34',
-                                                                                                       'APOE 44',
-                                                                                                       wilcox_pib_12.pvalue))
+        print('-----')
+        print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 34',
+                                                                                                              'APOE 44',
+                                                                                                              wilcox_age_12.pvalue))
+        print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 34',
+                                                                                                           'APOE 44',
+                                                                                                           wilcox_pib_12.pvalue))
 
     print('\n')
 
-    fig = plt.subplots(figsize=(10, 5))
+    fig = plt.subplots(figsize=(5, 5))
     plt.boxplot(boxplot_stock_age)
-    plt.xticks([i for i in range(1, len(group_labels)+1)], group_labels, rotation=60)
-    plt.ylabel('Age at PiB positive')
-    plt.title('Age at PiB positive according to ODE regression')
-    plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), bbox_inches='tight', pad_inches=0)
+
+    plt.xticks([i for i in range(1, len(group_labels)+1)], group_labels, rotation=60, fontsize=8)
+    plt.ylabel('Estimated age at onset of PiB positivity by APOE genotype', fontsize=10)
+    plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), pad_inches=1.)
     plt.close()
 
     fig = plt.subplots(figsize=(10, 5))
@@ -490,6 +508,7 @@ def run(args, device):
     plt.ylabel('PiB')
     plt.title('PiB at reference age {} y'.format(age_tref))
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_pib.png'), bbox_inches='tight', pad_inches=0)
+
     plt.close()
 
 

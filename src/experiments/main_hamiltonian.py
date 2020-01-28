@@ -59,6 +59,7 @@ parser.add_argument('--batch_size', type=int, default=16, help='Training batch s
 parser.add_argument('--model_type', type=str, default='POLY', choices=['RBF', 'LINEAR', 'POLY'], help='GP model type.')
 parser.add_argument('--tuning', type=int, default=50, help='Tuning of GP hyperparameters.')
 parser.add_argument('--pib_threshold', type=float, default=1.2, help='Onset for PiB positivity (data dependant).')
+parser.add_argument('--use_vars', action='store_true', help='Wether to use variance information or not.')
 # optimization parameters
 parser.add_argument('--method', type=str, default='midpoint', choices=['midpoint', 'rk4'], help='Integration scheme.')
 parser.add_argument('--epochs', type=int, default=100, help='Number of epochs.')
@@ -109,11 +110,14 @@ def get_dataframe(data_path, min_visits):
     df_merged = pd.concat([df_time, df_values], axis=1)
     assert len(df_time) == len(df_values) == len(df_merged)
     print('Number of patients : {:d}'.format(len(df_merged)))
+    print('Mean number of visits : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: len(x)))))
+    print('Mean span of visits : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: max(x)-min(x)))))
     df_merged = df_merged[df_merged['pib_age'].apply(lambda x: len(x)) >= min_visits]
     print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
 
     # Final merge
     df = df_merged.join(df_demo.set_index('reggieid')[['apoe_all1', 'apoe_all2']])
+    assert len(df) == len(df_merged)
     return df
 '''
 
@@ -168,7 +172,7 @@ def ivp_integrate_GP(model, t_eval, y0):
     return sequence['y']
 
 
-def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
+def data_to_derivatives(data_loader, preprocessing, var, alpha_default=100.):
     """
     Ridge regression on data to summarize trajectories with first derivatives
     """
@@ -185,7 +189,6 @@ def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
             t = gpu_numpy_detach(time[masker == True])
             s = gpu_numpy_detach(sequence[masker == True])
             n = len(t)
-            assert n > 2, "At least 3 points required for a 2nd order derivative estimate"
             t_bar = np.mean(t)
 
             # i) Fit Ridge regression
@@ -213,13 +216,16 @@ def data_to_derivatives(data_loader, preprocessing, var, alpha_default=10.):
             stats_derivatives['covars'].append(covars_derivatives)
 
     x_derivatives = np.transpose(np.stack(stats_derivatives['means']))
-    return x_derivatives
+    x_uncertainties = np.transpose(np.stack(stats_derivatives['covars']))
+    return x_derivatives, x_uncertainties
 
 
 def estimate_initialconditions(data_loader, GP_model, model_hamiltonian, preprocessing, pib_threshold, timesteps=200,
                                nb_var=3, epochs=100, lr=1e-1, min_lr=1e-5, lr_decay=.9, patience=5, method='midpoint'):
     """
-    Compute initial conditions at reference age (via Gradient Descent on initial conditions)
+    Compute initial conditions at reference age :
+    a) estimate best initial conditions on observation interval (via Gradient Descent)
+    b) shoot geodesic to reference age
     """
     assert method in ['midpoint', 'rk4']
     # First pass on data to get time interval
@@ -228,7 +234,6 @@ def estimate_initialconditions(data_loader, GP_model, model_hamiltonian, preproc
         for position, masker, time, sequence, label in zip(positions, maskers, times, sequences, labels):
             # ------ REDO PROCESSING STEP IN THE SAME FASHION
             t = gpu_numpy_detach(time[masker == True])
-            assert len(t) > 2, "At least 3 points required for a 2nd order derivative estimate"
             t_data.append(t)
     t_data = np.concatenate(t_data).ravel()
     t_line = np.linspace(t_data.min() - nb_var * t_data.var(),
@@ -269,7 +274,7 @@ def estimate_initialconditions(data_loader, GP_model, model_hamiltonian, preproc
             p_bar = gpu_numpy_detach(
                 model_hamiltonian.velocity_to_momenta(q=torch.from_numpy(np.array(A_bar.dot(theta)[0])).view(-1, 1),
                                                       v=torch.from_numpy(np.array(sdot_bar)).view(-1, 1)))
-            initial_condition = torch.Tensor([s_bar, p_bar]).view(1, -1)  # (batch, 2*dim)
+            initial_condition = torch.Tensor([s_bar, p_bar]).detach().clone().view(1, -1)  # (batch, 2*dim)
 
             # ------ Geodesic regression via gradient descent | initial conditions estimated at t_bar
             torch_t_eval = torch.from_numpy(t)
@@ -291,7 +296,7 @@ def estimate_initialconditions(data_loader, GP_model, model_hamiltonian, preproc
                                                               create_graph=True, retain_graph=True)
                 delta = regressed_flow.squeeze()[:, 0] - torch_y
                 loss_ = torch.mean(delta ** 2, dim=0, keepdim=False)
-                loss_.backward(retain_graph=True)
+                loss_.backward(retain_graph=False)
                 optimizer.step()
                 scheduler.step(loss_)
                 # Check NaN
@@ -367,8 +372,28 @@ def run(args, device):
     destandardize_data = lambda data: data * data_std + data_mean if args.preprocessing else data
     restandardize_data = lambda data: (data - data_mean) / data_std if args.preprocessing else data
 
+    # Plot dataset
+    xpltmin, xpltmax = np.inf, -np.inf
+    fig, ax = plt.subplots(figsize=(15, 5))
+    for batch_idx, (positions, maskers, times, sequences, _) in enumerate(all_loader):
+        for position, masker, time, sequence in zip(positions, maskers, times, sequences):
+            t = gpu_numpy_detach(destandardize_time(time[masker == True]))
+            s = gpu_numpy_detach(destandardize_data(sequence[masker == True]))
+            ax.plot(t, s, '--o')
+            xpltmin = min(xpltmin, min(t))
+            xpltmax = max(xpltmax, max(t))
+    ax.hlines(y=1.2, xmin=xpltmin, xmax=xpltmax, linestyle='-', color='k', alpha=.5, label='positivity threshold')
+    ax.set_title('WRAP dataset')
+    ax.set_xlabel('Age')
+    ax.set_ylabel('PiB Score')
+    ax.legend()
+    plt.savefig(os.path.join(args.snapshots_path, 'dataset.png'), pad_inches=0.5)  # bbox_inches='tight',
+    plt.close()
+
     # Ridge regression for longitudinal reduction
-    x_derivatives = data_to_derivatives(data_loader=all_loader, preprocessing=args.preprocessing, var=args.noise_std**2)
+    x_derivatives, x_uncertainties = data_to_derivatives(data_loader=all_loader, preprocessing=args.preprocessing,
+                                                         var=gpu_numpy_detach(destandardize_data(torch.from_numpy(np.array([args.noise_std]))**2)))
+
     u = x_derivatives[0]
     v = x_derivatives[1]
     v_squ = x_derivatives[1] ** 2
@@ -407,7 +432,15 @@ def run(args, device):
     training_iter = args.tuning     # for standardized, prefer low 5 | for raw, can go up to 50 with linear / poly
     train_x = torch.from_numpy(u).float()
     train_y = torch.from_numpy(ratio).float()
-    likelihood_GP = gpytorch.likelihoods.GaussianLikelihood()       # default noise : can be initialized wrt priors
+    # cf: https://gpytorch.readthedocs.io/en/latest/_modules/gpytorch/likelihoods/gaussian_likelihood.html#GaussianLikelihood
+    # likelihood_GP = gpytorch.likelihoods.GaussianLikelihood(noise_prior=)       # default noise : can be initialized wrt priors
+
+    if args.use_vars:
+        vardot_noises = torch.from_numpy(x_uncertainties[1, 1, filtered_index]).squeeze().float()            # uncertainties on x_dot
+        covdot_noises = torch.from_numpy(x_uncertainties[1, 0, filtered_index]).squeeze().float()  # uncertainties on x_dot
+        likelihood_GP = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise=covdot_noises, learn_additional_noise=False)
+    else:
+        likelihood_GP = gpytorch.likelihoods.GaussianLikelihood(noise_prior=args.noise_std**2)
 
     # list of ODE GP models
     if args.model_type == 'RBF':
@@ -425,6 +458,11 @@ def run(args, device):
     print('\n---')
     print('GP hyperparameters : pre-tuning\n')
     for name, param in model_GP_H.named_parameters():
+        print('>> {}'.format(name))
+        print('      {}\n'.format(param))
+    print('---\n')
+    print('loglikelihood : pre-tuning\n')
+    for name, param in likelihood_GP.named_parameters():
         print('>> {}'.format(name))
         print('      {}\n'.format(param))
     print('---\n')
@@ -609,6 +647,8 @@ def run(args, device):
         for i, idd in enumerate(idds):
             idd = int(idd)
             # real observed data
+            tmin = min(tmin, gpu_numpy_detach(destandardize_time(torch.from_numpy(time_values[idd]))).min())
+            tmax = max(tmax, gpu_numpy_detach(destandardize_time(torch.from_numpy(time_values[idd]))).max())
             if i == 0:
                 ax2.plot(destandardize_time(torch.from_numpy(time_values[idd])),
                          destandardize_data(torch.from_numpy(data_values[idd])),
@@ -639,7 +679,8 @@ def run(args, device):
             ymin = min(ymin, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).min())
             ymax = max(ymax, gpu_numpy_detach(destandardize_data(torch.from_numpy(data_values[idd]))).max())
 
-    ax2.set_ylim(ymin - .1 * (ymax - ymin), ymax + .1 * (ymax - ymin))
+    ax2.set_xlim(tmin - .25 * (tmax - tmin), tmax + .25 * (tmax - tmin))
+    ax2.set_ylim(ymin - .25 * (ymax - ymin), ymax + .25 * (ymax - ymin))
     ax2.set_xlabel('Age')
     ax2.set_ylabel('PiB')
     ax2.set_title('Geodesic reconstruction for random observations')
@@ -665,7 +706,7 @@ def run(args, device):
                    color='g', s=50., label='APOE 44')
 
     # Reconstructed trajectories | estimated age at onset (aka PiB positivity)
-    pib_at_t_ref = []  # storing estimated age of crossing PiB positivity
+    pib_at_positivity = [None]*(len(idx_33.squeeze()) + len(idx_34.squeeze()) + len(idx_44.squeeze()))
     for idds, name, color in zip(idx_squeeze_list,
                                  name_list, color_list):
         for i, idd in tqdm(enumerate(idds)):
@@ -693,8 +734,13 @@ def run(args, device):
                     color=color)
             ax.plot(destandardize_data(torch.from_numpy(all_geo[intrapolation_indexes, 0])),
                     all_geo[intrapolation_indexes, 1], linestyle='-', linewidth=2., color=color)
-            posidx = np.where(all_geo[:, 0] > float(restandardize_data(args.pib_threshold)))[0]
-            pib_at_t_ref.append(t_all[posidx[0]] if len(posidx) else None)
+            if all_geo[1, 0] >= all_geo[0, 0]:
+                # increasing in x --> look at first index after positivity
+                posidx = np.where(all_geo[:, 0] > float(restandardize_data(args.pib_threshold)))[0]
+            else:
+                # decreasing in x --> look at last index before positivity
+                posidx = np.where(all_geo[:, 0] > float(restandardize_data(args.pib_threshold)))[-1]
+            pib_at_positivity[idd] = t_all[posidx[0]] if len(posidx) else None
 
     ax.set_xlabel('PiB')
     ax.set_xlim(0.5, 2.5)      # ad hoc values, could be changed
@@ -706,19 +752,22 @@ def run(args, device):
     plt.savefig(os.path.join(args.snapshots_path, 'phase_space_regressions.png'), bbox_inches='tight', pad_inches=0)
     plt.close()
 
+    print(len(pib_at_positivity))
+    print(pib_at_positivity)
+
     # ==================================================================================================================
     # (WILCOXON) RANK TEST ON APOE PAIRS
     # ==================================================================================================================
 
     boxplot_stock_pib = []
-    # boxplot_stock_age = []
+    boxplot_stock_age = []
     for i_, name in zip(idxXX_list, name_list):
         age_tref = int(gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([t_ref]))))[0])
         pib_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np_ic_ref[0, i_])))
         p_tref = gpu_numpy_detach(destandardize_data(torch.from_numpy(np_ic_ref[1, i_])))
-        # trueage_tref = int(gpu_numpy_detach(np.array([pib_at_t_ref[int(i)] for i in i_])))
+        trueage_pibpos = int(gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity[int(i)] for i in i_])))))
         boxplot_stock_pib.append(pib_tref)
-        # boxplot_stock_age.append(trueage_tref)
+        boxplot_stock_age.append(trueage_pibpos)
         print('{}'.format(name))
         print('          PiB at reference age {} : {:.2f} +- {:.2f}'.format(age_tref, np.mean(pib_tref),
                                                                             np.std(pib_tref)))
@@ -732,42 +781,50 @@ def run(args, device):
                            y=np_ic[0, idx_44].squeeze())
     wilcox_A_12 = ranksums(x=np_ic[0, idx_34].squeeze(),
                            y=np_ic[0, idx_44].squeeze())
-    wilcox_B_01 = ranksums(x=np_ic[1, idx_33].squeeze(),
-                           y=np_ic[1, idx_34].squeeze())
-    wilcox_B_02 = ranksums(x=np_ic[1, idx_33].squeeze(),
-                           y=np_ic[1, idx_44].squeeze())
-    wilcox_B_12 = ranksums(x=np_ic[1, idx_34].squeeze(),
-                           y=np_ic[1, idx_44].squeeze())
+    wilcox_B_01 = ranksums(x=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_33]))).squeeze(),
+                           y=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_34]))).squeeze())
+    wilcox_B_02 = ranksums(x=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_33]))).squeeze(),
+                           y=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_44]))).squeeze())
+    wilcox_B_12 = ranksums(x=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_34]))).squeeze(),
+                           y=gpu_numpy_detach(destandardize_time(torch.from_numpy(np.array([pib_at_positivity])[idx_44]))).squeeze())
 
     print('\n')
     print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
                                                                                                        'APOE 34',
                                                                                                        wilcox_A_01.pvalue))
-    print('Wilcoxon test p-value for difference in vel (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
+    print('Wilcoxon test p-value for difference in age (at PiB pos) between {} and {} = {:.3f}'.format('APOE 33',
                                                                                                        'APOE 34',
                                                                                                        wilcox_B_01.pvalue))
     print('-----')
-    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 33',
+    print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
                                                                                                           'APOE 44',
                                                                                                           wilcox_A_02.pvalue))
-    print('Wilcoxon test p-value for difference in vel (at ref age) between {} and {} = {:.3f}'.format('APOE 33',
+    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 33',
                                                                                                        'APOE 44',
                                                                                                        wilcox_B_02.pvalue))
     print('-----')
-    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 34',
+    print('Wilcoxon test p-value for difference in PIB (at ref age) between {} and {} = {:.3f}'.format('APOE 34',
                                                                                                           'APOE 44',
                                                                                                           wilcox_A_12.pvalue))
-    print('Wilcoxon test p-value for difference in vel (at ref age) between {} and {} = {:.3f}'.format('APOE 34',
+    print('Wilcoxon test p-value for difference in age at PIB positive between {} and {} = {:.3f}'.format('APOE 34',
                                                                                                        'APOE 44',
                                                                                                        wilcox_B_12.pvalue))
     print('\n')
 
     fig = plt.subplots(figsize=(10, 5))
+
     plt.boxplot(boxplot_stock_pib)
     plt.xticks([i for i in range(1, len(name_list)+1)], name_list, rotation=60)
     plt.ylabel('PiB')
     plt.title('PiB score at reference age : {} years'.format(age_tref))
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_pib.png'), bbox_inches='tight', pad_inches=0)
+
+    plt.boxplot(boxplot_stock_age)   # boxplot_stock_age | boxplot_stock_pib
+    plt.xticks([i for i in range(1, len(name_list)+1)], name_list, rotation=60)
+    plt.ylabel('Age')
+    plt.title('Age at PiB positivity')
+    plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), bbox_inches='tight', pad_inches=0)
+
     plt.close()
 
 
