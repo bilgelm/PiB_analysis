@@ -96,11 +96,14 @@ def get_dataframe(data_path, min_visits):
     df_values = df_pib.groupby(['reggieid'])['pib_index'].apply(list)
     df_merged = pd.concat([df_time, df_values], axis=1)
     assert len(df_time) == len(df_values) == len(df_merged)
-    print('Number of patients : {:d}'.format(len(df_merged)))
+    print('Total number of patients : {:d}'.format(len(df_merged)))
     print('Mean number of visits : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: len(x)))))
     print('Mean span of visits : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: max(x) - min(x)))))
     df_merged = df_merged[df_merged['pib_age'].apply(lambda x: len(x)) >= min_visits]
-    print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
+    print('Now filtering patients with visits > {}'.format(min_visits - 1))
+    print('>> Number of patients : {:d}'.format(len(df_merged)))
+    print('>> Number of visits in average : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: len(x)))))
+    print('>> Number of span in average : {:.2f}'.format(np.mean(df_merged['pib_age'].apply(lambda x: max(x) - min(x)))))
 
     # Final merge
     df = df_merged.join(df_demo.set_index('reggieid')[['apoe_all1', 'apoe_all2']])
@@ -313,7 +316,7 @@ def run(args, device):
     ax.set_xlabel('PiV cDVR', fontsize=12)
     ax.set_ylabel('Slope of PiB cDVR (1/year)', fontsize=10)
     # ax.set_title('Estimates for ODE')
-    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.png'), pad_inches=1.)
+    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.png'), pad_inches=0.1, bbox_inches='tight')
     plt.close()
 
     # ==================================================================================================================
@@ -327,7 +330,6 @@ def run(args, device):
 
     if args.use_vars:
         vardot_noises = torch.from_numpy(x_uncertainties[1, 1]).squeeze().float()  # uncertainties on x_dot
-        covdot_noises = torch.from_numpy(x_uncertainties[1, 0]).squeeze().float()  # uncertainties on x_dot
         likelihood_GP = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise=vardot_noises, learn_additional_noise=False)
     else:
         likelihood_GP = gpytorch.likelihoods.GaussianLikelihood()
@@ -382,7 +384,7 @@ def run(args, device):
     # ax.set_title('GP regression on ODE function')
     ax.legend()
     plt.gray()
-    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.png'), pad_inches=1.)
+    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.png'), pad_inches=0.1, bbox_inches='tight')
     plt.close()
 
     # ==================================================================================================================
