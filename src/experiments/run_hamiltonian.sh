@@ -8,6 +8,9 @@ DATADIR='/Users/paul.vernhet/PhD_Aramis/experiments/data/ode_data/wrap_summer201
 
 # run FIRST ORDER script (no GPU) | no standardization | with filter | Linear Kernel | pre-tuning of kernel scale
 python ${CURRENT_PATH}/${PYTHON_SCRIPT} --output_dir ${OUTPUTDIR} --data_dir ${DATADIR} \
---min_visits 3 --batch_size 16 --filter_quantiles --eps_quantiles .15 --preprocessing \
+--min_visits 3 --batch_size 16 --filter_quantiles --eps_quantiles .15 \
 --model_type 'LINEAR' --tuning 5 \
---method 'midpoint' --epochs 100
+--method 'midpoint' --epochs 100 \
+--use_vars
+
+# --preprocessing

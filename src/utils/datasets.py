@@ -5,7 +5,7 @@ import torch.utils.data as data_utils
 
 
 
-def get_fromdataframe(df, batch_size, standardize=True, nobs=3, seed=123):
+def get_fromdataframe(df, batch_size, standardize=True, seed=123):
     """
     :param df: dataframe index: (int), columns: (time (list) | values (list) | apoe_all1 (int) | apoe_all2 (int))
     :param batch_size: batch size for data generator
@@ -36,17 +36,16 @@ def get_fromdataframe(df, batch_size, standardize=True, nobs=3, seed=123):
     for _, row in df.iterrows():
         # DATA GENERATION
         rowt, rowy, rowapoe_all1, rowapoe_all2 = row[0], row[1], row[2], row[3]
-        if len(rowt) >= nobs:
-            reference_time = torch.from_numpy(np.array(rowt + [rowt[-1] ] *(nb_bins -len(rowt))))
-            masker = torch.from_numpy(np.array([1 ] *len(rowt) + [0 ] *(nb_bins -len(rowt))).astype(int))
-            fns = torch.from_numpy(np.array(rowy + [rowy[-1] ] *(nb_bins -len(rowy))))
-            label = torch.from_numpy(np.array([rowapoe_all1, rowapoe_all2]))
+        reference_time = torch.from_numpy(np.array(rowt + [rowt[-1] ] *(nb_bins -len(rowt))))
+        masker = torch.from_numpy(np.array([1 ] *len(rowt) + [0 ] *(nb_bins -len(rowt))).astype(int))
+        fns = torch.from_numpy(np.array(rowy + [rowy[-1] ] *(nb_bins -len(rowy))))
+        label = torch.from_numpy(np.array([rowapoe_all1, rowapoe_all2]))
 
-            # GET AS MASKERS
-            times.append(reference_time)
-            points.append(fns)
-            maskers.append(masker)
-            labels.append(label)
+        # GET AS MASKERS
+        times.append(reference_time)
+        points.append(fns)
+        maskers.append(masker)
+        labels.append(label)
 
     times = torch.stack(times).type(torch.float)
     points = torch.stack(points).type(torch.float)
