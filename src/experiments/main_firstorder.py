@@ -481,6 +481,7 @@ def run(args, device):
     plt.boxplot(boxplot_stock_age)
     plt.xticks([i for i in range(1, 4)], ['APOE 33', 'APOE 34', 'APOE 44'], rotation=60, fontsize=8)
     plt.ylabel('Estimated age at onset of PiB positivity by APOE genotype', fontsize=10)
+    plt.ylim(35., 110.)
     plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), pad_inches=1.)
     plt.close()
 
