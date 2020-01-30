@@ -99,11 +99,14 @@ def get_dataframe(data_path, min_visits):
     df_merged = pd.concat([df_time, df_values], axis=1)
     assert len(df_time) == len(df_values) == len(df_merged)
 
-    df_merged = df_merged[df_merged['PIBage'].apply(lambda x: len(x)) >= min_visits]
-    print('Number of patients with visits > {} time : {:d}'.format(min_visits - 1, len(df_merged)))
-    #print('Number of patients : {:d}'.format(len(df_merged)))
+    print('Total number of patients : {:d}'.format(len(df_merged)))
     print('Mean number of visits : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: len(x)))))
     print('Mean span of visits : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: max(x) - min(x)))))
+    df_merged = df_merged[df_merged['PIBage'].apply(lambda x: len(x)) >= min_visits]
+    print('Now filtering patients with visits > {}'.format(min_visits - 1))
+    print('>> Number of patients : {:d}'.format(len(df_merged)))
+    print('>> Number of visits in average : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: len(x)))))
+    print('>> Number of span in average : {:.2f}'.format(np.mean(df_merged['PIBage'].apply(lambda x: max(x) - min(x)))))
 
     # Final merge
     df = df_merged.join(df_demo.groupby(['blsaid']).first()[['apoe4gen']]) # .set_index('blsaid')
@@ -307,7 +310,7 @@ def run(args, device):
     ax.set_xlabel('Age', fontsize=12)
     ax.set_ylabel('PiB cDVR', fontsize=12)
     ax.legend()
-    plt.savefig(os.path.join(args.snapshots_path, 'dataset.png'), pad_inches=.5)  # bbox_inches='tight',
+    plt.savefig(os.path.join(args.snapshots_path, 'dataset.eps'), pad_inches=.5, format='eps')
     plt.close()
 
     # Ridge regression for longitudinal reduction
@@ -325,7 +328,8 @@ def run(args, device):
     ax.set_xlabel('PiV cDVR', fontsize=12)
     ax.set_ylabel('Slope of PiB cDVR (1/year)', fontsize=10)
     # ax.set_title('Estimates for ODE')
-    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.png'), pad_inches=1.)
+    plt.savefig(os.path.join(args.snapshots_path, 'first_derivative_relationship.eps'), pad_inches=0.1,
+                bbox_inches='tight', format='eps')
     plt.close()
 
     # ==================================================================================================================
@@ -339,7 +343,6 @@ def run(args, device):
 
     if args.use_vars:
         vardot_noises = torch.from_numpy(x_uncertainties[1, 1]).squeeze().float()  # uncertainties on x_dot
-        covdot_noises = torch.from_numpy(x_uncertainties[1, 0]).squeeze().float()  # uncertainties on x_dot
         likelihood_GP = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise=vardot_noises, learn_additional_noise=False)
     else:
         likelihood_GP = gpytorch.likelihoods.GaussianLikelihood()
@@ -379,22 +382,25 @@ def run(args, device):
 
     # ------ Plots
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(x=destandardize_data(torch.from_numpy(u)), y=v, marker='o', color='k', s=10.)
+    ax.scatter(x=destandardize_data(torch.from_numpy(u)), y=v, marker='o', color='k', s=10., zorder=0)
     with torch.no_grad():
         u_line = np.linspace(u.min(), u.max(), 200)
         f_preds = model_GP_ODE(torch.from_numpy(u_line).float())
         f_mean = f_preds.mean
         f_var = f_preds.variance
-        ax.plot(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(f_mean), label=model_GP_ODE.name)
+        ax.plot(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(f_mean), '-b', label=model_GP_ODE.name,
+                zorder=1)
         lower, upper = f_mean - 2. * f_var, f_mean + 2. * f_var
-        ax.fill_between(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(lower), gpu_numpy_detach(upper), alpha=0.2)
+        ax.plot(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(lower), '-.b', linewidth=.5, zorder=2)
+        ax.plot(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(upper), '-.b', linewidth=.5, zorder=3)
+        ax.fill_between(destandardize_data(torch.from_numpy(u_line)), gpu_numpy_detach(lower), gpu_numpy_detach(upper),
+                        color='aqua', alpha=0.2, zorder=-1)
     ax.set_ylim(np.min(v) - 1e-4, np.max(v) + 1e-4)
     ax.set_xlabel('PiB cDVR', fontsize=12)
     ax.set_ylabel('Slope of PiB cDVR (1/year)', fontsize=10)
     # ax.set_title('GP regression on ODE function')
-    ax.legend()
-    plt.gray()
-    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.png'), pad_inches=1.)
+    ax.legend(loc=1)
+    plt.savefig(os.path.join(args.snapshots_path, 'GP_fit.eps'), pad_inches=0.1, bbox_inches='tight', format='eps')
     plt.close()
 
     # ==================================================================================================================
@@ -427,7 +433,7 @@ def run(args, device):
     ax.set_ylabel('PiB cDVR', fontsize=12)
     ax.legend()
     # ax.set_title('Aligned trajectories on common evolution')
-    plt.savefig(os.path.join(args.snapshots_path, 'Sequences_aligned.png'), pad_inches=0.5)
+    plt.savefig(os.path.join(args.snapshots_path, 'Sequences_aligned.eps'), pad_inches=0.5, format='eps')
     plt.close()
 
     # ==================================================================================================================
@@ -499,7 +505,8 @@ def run(args, device):
 
     plt.xticks([i for i in range(1, len(group_labels)+1)], group_labels, rotation=60, fontsize=8)
     plt.ylabel('Estimated age at onset of PiB positivity by APOE genotype', fontsize=10)
-    plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.png'), pad_inches=1.)
+    plt.ylim(35., 110.)
+    plt.savefig(os.path.join(args.snapshots_path, 'boxplots_age.eps'), pad_inches=1., format='eps')
     plt.close()
 
     fig = plt.subplots(figsize=(10, 5))
